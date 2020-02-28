@@ -1,0 +1,420 @@
+---
+title: "Time Series Analysis Project"
+author: "EL BAHAOUI OUSSAMA"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+
+Through this [R Markdown](http://rmarkdown.rstudio.com) Notebook, I'm answering the questions proposed by Prof Taoufik Ennajary for the Time Series Analysis Project. The goal of the project is to learn how to : plot, examine, and prepare series for modeling and forecasting via a process of evaluation and iteration.
+For this project, we used a data set containing the hourly and daily count of rental bikes between years 2011 and 2012 in Capital bike share system in Washington, DC with the corresponding weather and seasonal information. [dataset link](https://archive.ics.uci.edu/ml/datasets/Bike+Sharing+Dataset)
+
+## 0. Importing libraries
+
+```{r}
+library(lubridate)
+library(tseries)
+library(forecast)
+library("TTR")
+```
+
+## 1. Examine your data
+
+First, we download the zip folder contained in [https://archive.ics.uci.edu/ml/datasets/Bike+Sharing+Dataset](https://archive.ics.uci.edu/ml/datasets/Bike+Sharing+Dataset) and extract its files. For this project, we're mainly interested in the *day.csv* file. Then, we're reading the day data and store it into the **day.data** variable using the read.csv() function.
+
+```{r}
+day.data <- read.csv(file = "data/day.csv")
+```
+
+Now that the data is loaded, we need to examine its content.
+
+```{r}
+dim(day.data)
+```
+
+```{r}
+boxplot(day.data$casual ,day.data$registered, col = c("blue", "green"), ylab = "Number of bikes", xlab = "Rental method (Casual - Registered")
+```
+#### **Q1 - How do the temperatures change across the seasons? **
+
+We need to add a new variable containing the temperature in Celsius. Then we create a 
+
+```{r}
+day.data$temp.cel <- day.data$temp*(39 + 8) - 8
+day.temp <- ts(day.data$temp.cel)
+plot(day.temp, main = "Temperature across the 2 years", ylab="Temperature in Celsius", col="blue", xlab="Time by day index (1 -> 2011-01-01)")
+```
+The temperatures is increasing at the beginning of every year (spring and summer), reaching it's peak at summer then keep decreasing through (fall and winter) until the end of the year.
+
+#### **Q2 - What are the mean and median temperatures?**
+* Mean and Median temperature of Spring
+```{r}
+spring.temp <- subset(day.data, season == 1)$temp.cel
+print(mean(spring.temp))
+print(median(spring.temp))
+```
+
+* Mean and Median temperature of Summer
+```{r}
+summer.temp <- subset(day.data, season == 2)$temp.cel
+print(mean(summer.temp))
+print(median(summer.temp))
+```
+
+* Mean and Median temperature of Fall
+```{r}
+fall.temp <- subset(day.data, season == 3)$temp.cel
+print(mean(fall.temp))
+print(median(fall.temp))
+```
+
+* Mean and Median temperature of Winter
+```{r}
+winter.temp <- subset(day.data, season == 4)$temp.cel
+print(mean(winter.temp))
+print(median(winter.temp)) 
+```
+
+```{r}
+boxplot(subset(day.data, season == 1)$temp.cel, subset(day.data, season == 2)$temp.cel, subset(day.data, season == 3)$temp.cel, subset(day.data, season == 4)$temp.cel, col = c("green", "red", "orange", "blue"), xlab = "Spring - Summer - Fall - Winter", ylab = "Temperature")
+```
+
+#### **Q3 - Is there a correlation between the temp/atemp/mean.temp.atemp and the total count of bike rentals?**
+
+First we add two new columns to the data set.
+
+```{r}
+day.data$atemp.cel <- day.data$atemp*(50 + 16) - 16
+day.data$mean.temp.atemp = (day.data$temp.cel + day.data$atemp.cel)/2
+```
+
+Then we calculate correlations:
+* Correlation between the temp and cnt
+
+```{r}
+cor(day.data$temp.cel, day.data$cnt, method = c("pearson"))
+```
+
+* Correlation between the atemp and cnt
+
+```{r}
+cor(day.data$atemp.cel, day.data$cnt, method = c("pearson"))
+```
+
+* Correlation between the mean.temp.atemp and cnt
+
+```{r}
+cor(day.data$mean.temp.atemp, day.data$cnt, method = c("pearson"))
+```
+
+Correlation values are greater than **0.6** . We can affirm that there is a correlation between the 3 temperature variables and the total count of bike rentals.
+
+#### **Q4 - What are the mean temperature, humidity, wind speed and total rentals per months?**
+
+```{r}
+header <- c("Month", "Mean Temperature", "Mean Humidity", "Mean Windspeed", "Total rentals")
+per.months.df <- data.frame()
+for (i in (1:12)) {
+  sub.data <- subset(day.data, mnth == i)
+  line <-  c(i, mean((sub.data)$temp.cel), mean((sub.data)$hum*100), 
+             mean((sub.data)$windspeed*67), sum((sub.data)$cnt))
+  per.months.df = rbind(per.months.df, line)
+}
+colnames(per.months.df) <- header
+per.months.df
+```
+
+#### **Q5 - Is temperature associated with bike rentals (registered vs. casual)?**
+
+First, we calculate correlations...
+```{r}
+cor(day.data$temp.cel, day.data$casual, method = c("pearson"))
+cor(day.data$temp.cel, day.data$registered, method = c("pearson"))
+```
+
+Temperature and the count of bike users are not correlated!
+
+```{r}
+day.casual <- ts(day.data$casual)
+day.registered <- ts(day.data$registered)
+par(mfrow=c(2,1))
+plot(day.temp, day.casual, type="h", xlab="Temperature", ylab="Count of casual users")
+plot(day.temp, day.registered, type="h", xlab="Temperature", ylab="Count of registered users")
+```
+
+```{r}
+seqplot.ts(day.casual, day.registered, ylab = "Casual, Registred", xlab="Time by day index (1 -> 2011-01-01)")
+```
+
+Both registered bike rentals and casual bike rentals get their highest values when when temperature is between 14 and 24 degrees. And for both rental methods, the number of rentals is increasing with temperature, reaching a peak at 20 degrees, then decreases slowly when temperature is high.
+
+**In the following, we you build a predictive model ff the number of bike sharing by day.**
+
+#### **Q6 - Plot the cnt vs dteday and examine its patterns and irregularities**
+
+```{r}
+par(mfrow=c(1,1))
+plot(day.data$dteday, day.data$cnt, type="h", col="blue")
+```
+
+The count of total rental bikes plotted through time makes a double bell-like graph, showing the same overall shape, and an increase in bike rental in 2012.
+
+#### **Q7 - Clean up any outliers or missing values if needed**
+
+Now we create two new time series. day.cnt.raw contains the initial time series (before cleaning) and day.dteday for the time dimension.
+```{r}
+day.cnt.raw <- ts(day.data$cnt)
+day.dteday <- ts(day.data$dteday)
+plot(day.dteday, day.cnt.raw, col="blue")
+```
+
+Then we remove outlines using tsclean() . We also extract the outliers.
+
+```{r}
+day.cnt <- tsclean(day.cnt.raw)
+outliners <- day.cnt.raw[day.cnt!=day.cnt.raw]
+outliners
+```
+
+Finally, we can plot the cleaned time series.
+```{r}
+plot(day.dteday, day.cnt, col="blue")
+```
+
+#### **Q8 - Smooth your time series and compare with the original**
+
+For this part, I'm using two types of smoothing : a Simple Exponential Smoothing and a Simple Moving Average with order 10 .
+
+```{r}
+day.cnt.smoothed.se <- HoltWinters(day.cnt, beta=FALSE, gamma=FALSE)
+day.cnt.smoothed.se
+plot(day.cnt.smoothed.se)
+```
+
+```{r}
+day.cnt.smoothed.sma <- SMA(day.cnt,n=10)
+day.cnt.smoothed.sma
+plot(day.cnt.smoothed.sma, col="blue")
+```
+
+## 2. Decompose your data
+
+Now we will be using the smoothed time series with order 7, that we will name hereafter cnt_ma.
+
+First we create the smoothed time series with order 7.
+
+```{r}
+cnt_ma <- SMA(day.cnt,n=7)
+plot(cnt_ma, col="blue")
+```
+
+#### **Q1 - Transform cnt_ma into a time series with frequency 30 named count_ma.**
+
+```{r}
+count_ma <- ts(day.cnt, frequency = 30)
+plot(count_ma, col="blue")
+```
+
+
+#### **Q2 - Does the series count_ma appear to have trends or seasonality?**
+
+Yes, the count_ma time series shows a general tendency of rental increasing in the first two seasons then decreases in the last two seasons. The time series also shows a repeating short-term cycle through the two years.
+
+#### **Q3 - Use decompose() or stl() to examine and possibly remove components of the series**
+
+```{r}
+count_ma.decomposed <- decompose(count_ma)
+plot(count_ma.decomposed, col="blue")
+```
+
+The seasonal component confirms our hypothesis, and shows up even a more interesting seasonal monthly cycle.
+
+#### **Q4 - Create a time series deseasonal_cnt by removing the seasonal component**
+
+```{r}
+deseasonal_cnt <- count_ma - count_ma.decomposed$seasonal
+plot(count_ma, col = "blue", xlab="Time by months")
+legend(1, 8600, legend=c("count_ma", "deseasonal_cnt"), col=c("blue", "yellow"), lty=1:2, cex=0.8)
+lines(deseasonal_cnt, col = 'yellow')
+```
+
+
+## 3 - Stationarity
+
+#### ** Q - Is the series count_ma stationary? If not, how to make stationary**
+
+```{r}
+adf.test(count_ma, alternative = "stationary")
+```
+
+The p-value is greater that 0.05 , therefore count_ma is not stationary ACF describes how well the present value of the series is related with  its past values. Here, it also confirms that the series is not stationary since the auto-correlation is falling gradually.
+
+```{r}
+acf(count_ma)
+pacf(count_ma)
+```
+
+To make the time series stationary, we'll be using Differencing. Differencing is a process of subtracting each data point in the series from its successor. First, we need to know how many differencing is needed. 
+
+```{r}
+count_ma.diff1 <- diff(count_ma,differences = 1)
+adf.test(count_ma.diff1, alternative = "stationary")
+```
+
+The p-value is smaller than 0.05 . count_ma.diff1 is stationary. We conclude that we only need **one** differencing to make count_ma stationary.
+
+
+## 4 - Forecasting with ARIMA Models
+
+### *I - Fitting ARIMA model*
+
+#### **Q1 - Fit an ARIMA model to deseasonal_cnt**
+First, we need to check if the time series has a tendency.
+
+```{r}
+deseasonal_cnt.decomposed <- decompose(deseasonal_cnt)
+plot(deseasonal_cnt.decomposed, col="blue")
+```
+
+deseasonal_cnt doesn't have a tendency but have a seasonality. Now we check if the time series is stationary.
+
+```{r}
+adf.test(deseasonal_cnt, alternative = "stationary")
+acf(deseasonal_cnt)
+pacf(deseasonal_cnt)
+```
+
+deseasonal_cnt is not stationnary, we need to do a differencing.
+
+```{r}
+deseasonal_cnt.diff1 <- diff(deseasonal_cnt,differences = 1)
+adf.test(deseasonal_cnt.diff1, alternative = "stationary")
+```
+
+deseasonal_cnt.diff1 is stationary, since its p-value is less that 0.05 .adf.test returns also the lag order q = 8, and we have d = 1. From PACF, it's clearly that within 6 lags the AR is significant. which means, we can use p = 6 .
+
+```{r}
+deseasonal_cnt.arima <- arima(deseasonal_cnt.diff1, order = c(6,0,8))
+deseasonal_cnt.arima
+```
+
+Maybe the process that we've followed is not the best way to select p d and q. We need to evaluate this model and iterate.
+
+### *II - Fit an ARIMA with Auto-ARIMA*
+
+#### **Q1 - Use auto.arima() function to fit an ARIMA model of deseasonal_cnt**
+
+```{r}
+deseasonal_cnt.autoarima <- auto.arima(deseasonal_cnt, seasonal = FALSE)
+deseasonal_cnt.autoarima
+```
+
+#### **Q2 - Check residuals, which should have no patterns and be normally distributed**
+
+```{r}
+deseasonal_cnt.autoarima.residuals <- deseasonal_cnt.autoarima$residuals
+tsdisplay(deseasonal_cnt.autoarima.residuals, main='(1,1,1) Model Residuals') 
+```
+
+```{r}
+hist(deseasonal_cnt.autoarima.residuals)
+```
+
+```{r}
+shapiro.test(deseasonal_cnt.autoarima.residuals)
+```
+
+The residuals are not normally distributed. The auto.arima() function didn't give us a good model. We should iterate!  
+
+
+### *III - Evaluate and iterate*
+
+#### **Q1 - If there are visible patterns or bias, plot ACF/PACF**
+#### **Q2 - Refit model if needed. Compare model errors and fit criteria such as AIC or BIC**
+
+We will train 10 different Arima models by changing the p-order value.
+
+```{r}
+aic.values <- c()
+for (p in (0:9)){
+  deseasonal_cnt.arima <- arima(deseasonal_cnt, order = c(p,0,8))
+  aic.values <- c(aic.values, deseasonal_cnt.arima$aic)
+}
+which.min(aic.values)
+```
+
+The model order that gave the minimum AIC value is p=8, d=0 and q=8 . Now we train the model to be used for forecasting.
+
+```{r}
+deseasonal_cnt.arima <- arima(deseasonal_cnt, order = c(8,0,8))
+deseasonal_cnt.arima
+```
+
+#### **Q3 - Calculate forecast using the chosen model**
+
+```{r}
+deseasonal_cnt.cast <- forecast(deseasonal_cnt.arima)
+plot(deseasonal_cnt.cast)
+acf(deseasonal_cnt.cast$residuals, lag.max=20)
+Box.test(deseasonal_cnt.cast$residuals, lag=20, type="Ljung-Box")
+```
+
+
+#### **Q4 - Plot both the original and the forecasted time series**
+
+```{r}
+plot(deseasonal_cnt, col="red") # original
+legend(1, 8600, legend=c("Original", "Fitted"), col=c("red", "blue"), lty=1:2, cex=0.8)
+lines(fitted(deseasonal_cnt.arima), col="blue") # fitted
+```
+
+
+### *IV - Forecasting*
+
+#### **Q1 - Split the data into training and test times series**
+
+```{r}
+end.time = time(deseasonal_cnt)[700]
+train.set <- window(deseasonal_cnt, end=end.time)
+test.set <- window(deseasonal_cnt, start=end.time)
+```
+
+#### **Q2 - fit an Arima model, manually and with Auto-Arima on the training part**
+
+```{r}
+manual.fit <- Arima(train.set, order=c(8, 0, 8))
+manual.fc <- forecast(manual.fit, h=32)
+print(paste("Accuracy of the manual Arima model : ", accuracy(manual.fc, test.set)[2,"RMSE"]))
+
+auto.fit <- auto.arima(train.set, seasonal = FALSE)
+auto.fc <- forecast(auto.fit, h=32)
+print(paste("Accuracy of the auto Arima model : ", accuracy(auto.fc, test.set)[2,"RMSE"]))
+```
+
+
+```{r}
+plot(deseasonal_cnt, col="red") # original
+legend(1, 8600, legend=c("Original", "Manual Arima"), col=c("red", "blue"), lty=1:2, cex=0.8)
+lines(fitted(manual.fc), col="blue") # manuall arima
+
+plot(deseasonal_cnt, col="red") # original
+legend(1, 8600, legend=c("Original", "Auto Arima"), col=c("red", "green"), lty=1:2, cex=0.8)
+lines(fitted(auto.fit), col="green") # auto arima
+```
+
+#### **Q3 - Forecast the next 25 observation and plot the original ts and the forecasted one**
+
+```{r}
+deseasonal_cnt.forecast.manual <- forecast(manual.fit, h=25)
+deseasonal_cnt.forecast.auto <- forecast(auto.fit, h=25)
+
+par(mfrow=c(2,1))
+plot(deseasonal_cnt.forecast.manual, main = "Forecast with manual Arima", include = test.set)
+plot(deseasonal_cnt.forecast.auto, main = "Forecast with auto Arima", include = test.set)
+```
+
+The manual Arima model gives a more natural forecast than the auto Arima one.
